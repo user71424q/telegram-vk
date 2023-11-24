@@ -1,2 +1,4 @@
-vk-api
-pyTelegramBotAPI
+pyTelegramBotAPI==4.14.0
+python-dotenv==1.0.0
+Requests==2.31.0
+vk_api==11.9.9
