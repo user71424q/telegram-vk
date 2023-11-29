@@ -1,3 +1,16 @@
+"""
+Этот модуль содержит функционал для прослушивания сообщений в Telegram и их пересылки в VK (ВКонтакте).
+Он настраивает соединения с API Telegram и VK и управляет процессом пересылки сообщений.
+
+Функции:
+- listen_telegram(tg_token, chat_id, vk_token, vk_chat_id):
+  Прослушивает сообщения в указанном чате Telegram и пересылает их в чат VK. Требует токены API и ID чатов обеих платформ.
+
+Использование:
+- Укажите необходимые токены API и ID чатов для Telegram и VK.
+- Вызовите функцию listen_telegram для начала прослушивания и пересылки сообщений.
+"""
+
 import io
 import os
 from vk_api import VkApiError
@@ -6,13 +19,31 @@ import vk_api
 from vk_api.utils import get_random_id
 import logging
 from telebot.apihelper import ApiException
+import urllib3
+import time
+from http.client import RemoteDisconnected
+from requests.exceptions import ConnectionError, Timeout
 
-def listen_telegram(tg_token, chat_id, vk_token, vk_chat_id):
+def listen_telegram(tg_token: str, chat_id: int, vk_token: str, vk_chat_id: int) -> None:
+    """
+    Прослушивает сообщения в Telegram и пересылает их в VK.
+
+    Параметры:
+        tg_token (str): Токен бота Telegram.
+        chat_id (int): ID чата Telegram.
+        vk_token (str): Токен для VK.
+        vk_chat_id (int): ID чата VK.
+
+    Возвращает:
+        None
+    """
     try:
         bot = telebot.TeleBot(tg_token, parse_mode=None)
         vk_session = vk_api.VkApi(token=vk_token)
     except VkApiError as vk_api_error:
-        logging.error(f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(vk_api_error)}, Описание: {vk_api_error}")
+        logging.error(
+            f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(vk_api_error)}, Описание: {vk_api_error}"
+        )
         exit(1)
 
     @bot.message_handler(
@@ -26,28 +57,56 @@ def listen_telegram(tg_token, chat_id, vk_token, vk_chat_id):
             send_vk_message(vk_session, vk_message, vk_chat_id)
         except VkApiError as vk_api_error:
             try:
-                send_vk_message(vk_session, {'text': f'ERROR: {vk_api_error}'}, vk_chat_id)
+                send_vk_message(
+                    vk_session, {"text": f"ERROR: {vk_api_error}"}, vk_chat_id
+                )
             except Exception as e:
-                logging.error(f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(vk_api_error)}, Описание: {vk_api_error}")
+                logging.error(
+                    f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(vk_api_error)}, Описание: {vk_api_error}"
+                )
         except ApiException as tg_api_exception:
             try:
-                send_vk_message(vk_session, {'text': f'ERROR: {tg_api_exception}'}, vk_chat_id)
+                send_vk_message(
+                    vk_session, {"text": f"ERROR: {tg_api_exception}"}, vk_chat_id
+                )
             except Exception as e:
-                logging.error(f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(tg_api_exception)}, Описание: {tg_api_exception}")
+                logging.error(
+                    f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(tg_api_exception)}, Описание: {tg_api_exception}"
+                )
         except Exception as e:
             logging.error(f"Непредвиденная ошибка: {e}")
-    try:
-        bot.polling(non_stop=True, skip_pending=True)
-    except ApiException as tg_api_exception:
+    retries = 0
+    while retries < 10:
         try:
-            send_vk_message(vk_session, {'text': f'ERROR: {tg_api_exception}'}, vk_chat_id)
+            bot.polling(non_stop=True, skip_pending=True)
+        except ApiException as tg_api_exception:
+            try:
+                send_vk_message(
+                    vk_session, {"text": f"ERROR: {tg_api_exception}"}, vk_chat_id
+                )
+            except Exception as e:
+                logging.error(
+                    f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(tg_api_exception)}, Описание: {tg_api_exception}"
+                )
+        except (urllib3.exceptions.ProtocolError, RemoteDisconnected, ConnectionError, Timeout):
+            logging.warning("Проблемы сетью, попытка повторного подключения....")
+            time.sleep(30)
+            retries += 1
         except Exception as e:
-            logging.error(f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(tg_api_exception)}, Описание: {tg_api_exception}")
-    except Exception as e:
-        logging.error(f"Непредвиденная ошибка: {e}")
+            logging.error(f"Непредвиденная ошибка: {e}")
 
 
-def process_telegram_message(bot, message):
+def process_telegram_message(bot: telebot.TeleBot, message) -> dict:
+    """
+    Преобразует объект сообщения телеграма в формат для ВК
+
+    Параметры:
+        bot (telebot.TeleBot): Объект бота Telegram.
+        message: Объект сообщения телеграм.
+
+    Возвращает:
+        dict - словарь, подобный вк сообщению во структуре
+    """
     vk_message = {}
 
     # Функция для обработки фотографий
@@ -187,7 +246,18 @@ def process_telegram_message(bot, message):
     return vk_message
 
 
-def send_vk_message(vk_session, vk_message, chat_id):
+def send_vk_message(vk_session: vk_api.VkApi, vk_message: dict, chat_id: int) -> None:
+    """
+    Отправляет сообщение вк в нужный чат.
+
+    Параметры:
+        vk_session (vk_api.VkApi): Объект сессии.
+        vk_message (dict): Словарь с полями текста и вложений сообщения вк.
+        chat_id (int): ID чата VK.
+
+    Возвращает:
+        None
+    """
     vk = vk_session.get_api()
 
     # Отправка текстового сообщения

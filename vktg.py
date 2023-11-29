@@ -1,3 +1,16 @@
+"""
+Этот модуль отвечает за прослушивание сообщений в VK (ВКонтакте) и их пересылку в Telegram.
+Он устанавливает соединения с API VK и Telegram и управляет процессом пересылки сообщений из VK в Telegram.
+
+Функции:
+- listen_vk(vk_token, vk_group_id, VK_CHAT_ID, tg_token, TG_CHAT_ID):
+  Прослушивает сообщения в указанном чате VK и пересылает их в чат Telegram. Требует токены API и ID группы/чата для обеих платформ.
+
+Использование:
+- Укажите необходимые токены API, ID группы/чата для VK и Telegram.
+- Вызовите функцию listen_vk для начала процесса прослушивания и пересылки.
+"""
+
 import io
 import logging
 import requests
@@ -6,51 +19,80 @@ import vk_api
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
 from telebot.apihelper import ApiException
 from vk_api import VkApiError
+import urllib3
+import time
+from http.client import RemoteDisconnected
+from requests.exceptions import ConnectionError, Timeout
 
+def listen_vk(vk_token: str, vk_group_id: int, VK_CHAT_ID: int, tg_token: str, TG_CHAT_ID: int) -> None:
+    """
+    Прослушивает сообщения в VK и пересылает их в Telegram.
 
-def listen_vk(
-    vk_token, vk_group_id, VK_CHAT_ID, tg_token, TG_CHAT_ID
-):
-    """Функция для прослушивания ВК"""
+    Параметры:
+        vk_token (str): Токен для VK.
+        vk_group_id (int): ID группы VK.
+        VK_CHAT_ID (int): ID чата VK.
+        tg_token (str): Токен бота Telegram.
+        TG_CHAT_ID (int): ID чата Telegram.
+
+    Возвращает:
+        None
+    """
     try:
         telegram_bot = telebot.TeleBot(tg_token, parse_mode=None)
         vk_session = vk_api.VkApi(token=vk_token)
         longpoll = VkBotLongPoll(vk_session, vk_group_id)
     except VkApiError as vk_api_error:
-        logging.error(f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(vk_api_error)}, Описание: {vk_api_error}")
+        logging.error(
+            f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(vk_api_error)}, Описание: {vk_api_error}"
+        )
         exit(1)
-    
-    for event in longpoll.listen():
+    retries = 0
+    while retries < 10:
         try:
-            # если есть новые сообщения
-            if (
-                event.type == VkBotEventType.MESSAGE_NEW
-                and event.object.message["peer_id"] == VK_CHAT_ID
-            ):
-                send_to_tg(
-                    event.message, vk_session, telegram_bot, TG_CHAT_ID
-                )
-        except VkApiError as vk_api_error:
-            try:
-                telegram_bot.send_message(TG_CHAT_ID, f"ERROR: {vk_api_error}")
-            except Exception as e:
-                logging.error(f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(vk_api_error)}, Описание: {vk_api_error}")
-        except ApiException as tg_api_exception:
-            try:
-                telegram_bot.send_message(TG_CHAT_ID, f"ERROR: {tg_api_exception}")
-            except Exception as e:
-                logging.error(f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(tg_api_exception)}, Описание: {tg_api_exception}")
-        except Exception as e:
-            logging.error(f"Непредвиденная ошибка: {e}")
-   
+            for event in longpoll.listen():
+                try:
+                    # если есть новые сообщения
+                    if (
+                        event.type == VkBotEventType.MESSAGE_NEW
+                        and event.object.message["peer_id"] == VK_CHAT_ID
+                    ):
+                        send_to_tg(event.message, vk_session, telegram_bot, TG_CHAT_ID)
+                except VkApiError as vk_api_error:
+                    try:
+                        telegram_bot.send_message(TG_CHAT_ID, f"ERROR: {vk_api_error}")
+                    except Exception as e:
+                        logging.error(
+                            f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(vk_api_error)}, Описание: {vk_api_error}"
+                        )
+                except ApiException as tg_api_exception:
+                    try:
+                        telegram_bot.send_message(TG_CHAT_ID, f"ERROR: {tg_api_exception}")
+                    except Exception as e:
+                        logging.error(
+                            f"Невозможно доставить сообщение об ошибке пользователю. Тип ошибки: {type(tg_api_exception)}, Описание: {tg_api_exception}"
+                        )
+                except Exception as e:
+                    logging.error(f"Непредвиденная ошибка: {e}, {type(e)}")
+                    exit(1)
+        except (urllib3.exceptions.ProtocolError, RemoteDisconnected, ConnectionError, Timeout):
+            logging.warning("Проблемы сетью, попытка повторного подключения....")
+            time.sleep(30)
+            retries += 1
 
 
+def send_to_tg(message, vk_session: vk_api.VkApi, telegram_bot: telebot.TeleBot, TG_CHAT_ID: int) -> None:
+    """
+    Отправляет сообщение вк в телеграм.
 
-def send_to_tg(message, vk_session, telegram_bot, TG_CHAT_ID) -> None:
-    """Функция для отправки сообщений в телеграм
-    Args:
-        message: Объект сообщения, полученный из vkApi.
-    Returns: None
+    Параметры:
+        message: Объект сообщения.
+        vk_session (vk_api.VkApi): Объект сессии.
+        telegram_bot (telebot.TeleBot): Объект телеграм бота.
+        TG_CHAT_ID (int): ID чата Telegram.
+
+    Возвращает:
+        None
     """
     # TODO обработка видео и аудио
 
@@ -65,7 +107,17 @@ def send_to_tg(message, vk_session, telegram_bot, TG_CHAT_ID) -> None:
             )
 
 
-def get_username(vk_session, id=0) -> str:
+def get_username(vk_session: vk_api.VkApi, id=0) -> str:
+    """
+    Отправляет сообщение вк в телеграм.
+    
+    Параметры:
+        vk_session (vk_api.VkApi): Объект сессии.
+        id (int): id пользователя или группы.
+
+    Возвращает:
+        Фамилия Имя (str) 
+    """
     api = vk_session.get_api()
     if id > 0:
         user_get = api.users.get(user_ids=id)[0]
@@ -78,14 +130,22 @@ def get_username(vk_session, id=0) -> str:
     return name
 
 
-def get_forward_tree(message, depth: int, vk_session) -> str:
-    """Функция возвращает дерево вложенных сообщений в текстовом формате
+def get_forward_tree(message, depth: int, vk_session: vk_api.VkApi) -> str:
+    """
+    Функция возвращает дерево вложенных сообщений в текстовом формате
+
+    Параметры:
+        message: Объект сообщения.
+        depth (int): Текущая глубина рекурсии.
+        vk_session (vk_api.VkApi): Объект сессии.
+
     Пример:
     Я пересылаю сообщение
     |А это пересланое сообщение
     ||Более глубокая вложенность
 
-    Returns: str
+    Возвращает:
+        str
     """
     # date_str = datetime.fromtimestamp(message["date"]).strftime("%d %b %Y")
     # time_str = datetime.fromtimestamp(message["date"]).strftime("%H:%M:%S")
@@ -110,14 +170,20 @@ def get_forward_tree(message, depth: int, vk_session) -> str:
     for forwarded in message.get("fwd_messages", []):
         tree += get_forward_tree(forwarded, depth + 1, vk_session)
     if message.get("reply_message"):
-        tree += get_forward_tree(
-            message["reply_message"], depth + 1, vk_session
-        )
+        tree += get_forward_tree(message["reply_message"], depth + 1, vk_session)
     return tree
 
 
 def get_all_attachments(message, attachments_dict: dict) -> None:
-    """Функция получает фото, видео и стикеры из всех вложенных сообщений, они динамически добавляются в attachments_array"""
+    """
+    Функция получает фото, видео и стикеры из всех вложенных сообщений, они динамически добавляются в attachments_array
+
+    Параметры:
+        message: Объект сообщения.
+        attachments_dict (dict): Словарь, в который будут добавлены вложения.
+    Возвращает:
+        None
+    """
     if message["attachments"]:
         for attachment in message["attachments"]:
             if attachment["type"] == "photo":
